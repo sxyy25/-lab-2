@@ -67,3 +67,69 @@ int read_int_safe(const char* prompt) {
     }
     return value;
 }
+
+void print_inventory(const int inventory[]) {
+    int i;
+    for (i = 0; i < INVENTORY_SIZE; ++i) {
+        int id = inventory[i];
+        printf("Слот %d: [%d] (%s)\n", i, id, get_item_name(id));
+    }
+}
+
+void invert_inventory(int inventory[]) {
+    int left = 0;
+    int right = INVENTORY_SIZE - 1;
+
+    while (left < right) {
+        int temp = inventory[left];
+        inventory[left] = inventory[right];
+        inventory[right] = temp;
+        ++left;
+        --right;
+    }
+}
+
+int main(void) {
+
+    int current_day = 1;
+    int current_hour = 8;
+
+    int inventory[INVENTORY_SIZE] = {
+        ITEM_WOOD, ITEM_STONE, ITEM_EMPTY, ITEM_SEEDS, ITEM_IRON,
+        ITEM_COAL, ITEM_AXE, ITEM_APPLE, ITEM_PICKAXE, ITEM_WHEAT
+    };
+
+    int choice;
+
+      while (1) {
+        printf("\n=== МЕНЮ ===\n");
+        printf("[0] Выход\n");
+        printf("[1] Посмотреть на часы\n");
+        printf("[2] Промотать время (Поработать)\n");
+        printf("[3] Посмотреть инвентарь\n");
+        printf("[4] Положить предмет в слот\n");
+        printf("[5] Выбросить предмет\n");
+        printf("[6] Выполнить задание по варианту (Инверсия карманов)\n");
+
+        choice = read_int_safe("Выберите пункт: ");
+
+        switch (choice) {
+            case 0:
+                printf("Выход из игры.\n");
+                return 0;
+
+            case 1:
+             printf("Текущее время: День %d, %02d:00\n", current_day, current_hour);
+                break;
+
+            case 2: {
+                int hours_work = read_int_safe("Сколько часов вы хотите поработать? ");
+                if (hours_work < 0) {
+                    printf("Часы не могут быть отрицательными.\n");
+                    break;
+                }
+
+                current_hour += hours_work;
+            }
+        }
+    }
