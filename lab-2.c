@@ -130,6 +130,59 @@ int main(void) {
                 }
 
                 current_hour += hours_work;
+                  break;
             }
+             case 3:
+                print_inventory(inventory);
+                break;
+
+            case 4: {
+                int slot_index = read_int_safe("Введите индекс слота (0–9): ");
+                if (slot_index < 0 || slot_index >= INVENTORY_SIZE) {
+                    printf("Недопустимый индекс слота. Допустимые значения: 0–%d.\n", INVENTORY_SIZE - 1);
+                    break;
+                }
+
+                int item_id = read_int_safe("Введите ID предмета (0–9): ");
+                if (item_id < 0 || item_id > 9) {
+                    printf("Недопустимый ID предмета. Допустимые значения: 0–9.\n");
+                    break;
+                }
+
+                inventory[slot_index] = item_id;
+                printf("Предмет с ID %d помещён в слот %d.\n", item_id, slot_index);
+                break;
+            }
+
+            case 5: {
+                int slot_index = read_int_safe("Введите индекс слота для удаления предмета (0–9): ");
+                if (slot_index < 0 || slot_index >= INVENTORY_SIZE) {
+                    printf("Недопустимый индекс слота.\n");
+                    break;
+                }
+
+                int old_id = inventory[slot_index];
+                inventory[slot_index] = ITEM_EMPTY;
+                printf("Предмет из слота %d удалён (был ID %d).\n", slot_index, old_id);
+                break;
+            }
+
+            case 6: {
+                printf("Инвентарь ДО инверсии:\n");
+                print_inventory(inventory);
+
+                invert_inventory(inventory);
+
+                printf("Инвентарь ПОСЛЕ инверсии:\n");
+                print_inventory(inventory);
+                break;
+            }
+
+            default:
+                printf("Неверный пункт меню. Выберите от 0 до 6.\n");
+                break;
         }
     }
+
+    return 0;
+}
