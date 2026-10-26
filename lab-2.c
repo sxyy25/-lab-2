@@ -34,6 +34,9 @@ void invert_inventory(int *inventory);
 void get_farmer_name(char *name);
 int find_item_by_name(const char (*item_names)[MAX_NAME_LEN], const char *target_name);
 void write_diary(const char *farmer_name, int day, int hour, const int *inventory, const char (*item_names)[MAX_NAME_LEN]);
+void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN]);
+int replace_tag_in_line(char *line, const char *tag, const char *replacement);
+
 
 int main(void)
 {
@@ -81,8 +84,10 @@ int main(void)
         printf("6 - Инверсия карманов\n");
         printf("7 - Поиск предмета по названию\n");
         printf("8 - Записать состояние в дневник (diary.txt)\n");
+        printf("9 - Обработать письмо от старосты (шаблонизатор NPC)\n");
 
-        printf("Введи № действия (0-8): ");
+
+        printf("Введи № действия (0-9): ");
 
         if (scanf("%d", &taskNum) != 1)
         {
@@ -202,6 +207,10 @@ int main(void)
             write_diary(farmer_name, current_day, current_hour, inventory, item_names);
             printf("Дневник успешно сохранен в diary.txt\n");
             break;
+            case 9:
+    process_npc_dialogue(farmer_name, current_day, inventory, item_names);
+    break;
+
 
         case 0:
             printf("До встречи, %s!\n", farmer_name);
@@ -402,4 +411,103 @@ void write_diary(const char *farmer_name, int day, int hour, const int *inventor
     fprintf(file, "------------------------\n\n");
 
     fclose(file);
+}
+
+int replace_tag_in_line(char *line, const char *tag, const char *replacement)
+{
+    int count = 0;
+    char *pos = line;
+
+    size_t tag_len = strlen(tag);
+    if (tag_len == 0) return 0;
+
+    while ((pos = strstr(pos, tag)) != NULL)
+    {
+        size_t remaining = strlen(pos);
+        // Сдвигаем хвост строки, чтобы освободить место под замену
+        size_t replace_len = strlen(replacement);
+        if (replace_len > tag_len)
+        {
+            // Если замена длиннее тега, нужно сдвинуть хвост вправо
+            memmove(pos + replace_len, pos + tag_len, remaining - tag_len + 1);
+        }
+        else if (replace_len < tag_len)
+        {
+            // Если короче — сдвигаем влево, чтобы убрать лишнее
+            memmove(pos + replace_len, pos + tag_len, remaining - tag_len + 1);
+        }
+
+        // Вставляем замену
+        memcpy(pos, replacement, replace_len);
+
+        pos += replace_len;      // двигаемся дальше после вставки
+        count++;
+    }
+
+    return count;
+}
+
+void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN])
+{
+    FILE *in = fopen("input.txt", "r");
+    FILE *out = fopen("output.txt", "w");
+
+    if (!in)
+    {
+        printf("Ошибка: не удалось открыть input.txt\n");
+        return;
+    }
+    if (!out)
+    {
+        printf("Ошибка: не удалось создать output.txt\n");
+        fclose(in);
+        return;
+    }
+
+    char line[MAX_LINE_LEN];
+    const char *item0_name = item_names[ITEM_EMPTY]; // по умолчанию "Пусто"
+
+    // Получаем название предмета в нулевом слоте (если ID корректен)
+    int id0 = inventory[0];
+    if (id0 >= 0 && id0 < MAX_ITEMS)
+    {
+        item0_name = item_names[id0];
+    }
+
+    printf("\n=== Обработка письма от старосты (Вариант 4) ===\n");
+
+    int line_num = 0;
+    while (fgets(line, sizeof(line), in) != NULL)
+    {
+        line_num++;
+
+        // Убираем \n для удобства, но сохраняем возможность вывода
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n')
+        {
+            line[len - 1] = '\0';
+            len--;
+        }
+
+        // Заменяем теги
+        replace_tag_in_line(line, "<NAME>", farmer_name);
+        replace_tag_in_line(line, "<DAY>", line); // сначала <DAY> нельзя, он числовой
+        // Чтобы заменить <DAY>, нужно подготовить строку-число
+        char day_str[16];
+        sprintf(day_str, "%d", day);
+        replace_tag_in_line(line, "<DAY>", day_str);
+
+        replace_tag_in_line(line, "<ITEM>", item0_name);
+
+        // Выводим на экран
+        printf("%s\n", line);
+
+        // Пишем в файл (с новой строкой)
+        fprintf(out, "%s\n", line);
+    }
+
+    fclose(in);
+    fclose(out);
+
+    printf("=== Готово. Результат сохранён в output.txt ===\n");
 }
