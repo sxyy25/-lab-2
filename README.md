@@ -62,4 +62,70 @@ void process_npc_dialogue(const char *farmer_name, int day, const int *inventory
     fclose(out);
     printf("=== Готово. Результат сохранён в output.txt ===\n");
 }
+void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN])
+{
+    FILE *in = fopen("input.txt", "r");
+    FILE *out = fopen("output.txt", "w");
+    char line[MAX_LINE_LEN];
+    char day_str;       // Объявление в начале (C89-совместимо)
+    int line_num = 0;       // Объявление в начале
+    size_t len;             // Объявление в начале
+    const char *item0_name = item_names[ITEM_EMPTY];
+    int id0 = inventory;
+void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN])
+{
+    FILE *in = fopen("input.txt", "r");
+    FILE *out = fopen("output.txt", "w");
+    char line[MAX_LINE_LEN];
+    char day_str;       // Объявление в начале (C89-совместимо)
+    int line_num = 0;       // Объявление в начале
+    size_t len;             // Объявление в начале
+    const char *item0_name = item_names[ITEM_EMPTY];
+    int id0 = inventory;
 
+    if (id0 >= 0 && id0 < MAX_ITEMS)
+    {
+        item0_name = item_names[id0];
+    }
+
+    if (!in || !out)
+    {
+        if (in) fclose(in);
+        if (out) fclose(out);
+        return;
+    }
+
+    printf("\n=== Обработка письма от старосты (Вариант 4) ===\n");
+
+    while (fgets(line, sizeof(line), in) != NULL)
+    {
+        line_num++;
+        len = strlen(line);
+
+        if (len == MAX_LINE_LEN - 1 && line[len - 1] != '\n')
+        {
+            fprintf(stderr, "Предупреждение: строка %d обрезана.\n", line_num);
+        }
+
+        if (len > 0 && line[len - 1] == '\n')
+        {
+            line[len - 1] = '\0';
+        }
+
+        replace_tag_in_line(line, "<NAME>", farmer_name);
+
+        snprintf(day_str, sizeof(day_str), "%d", day);
+        replace_tag_in_line(line, "<DAY>", day_str);
+
+        replace_tag_in_line(line, "<ITEM>", item0_name);
+
+        printf("%s\n", line);
+        fprintf(out, "%s\n", line);
+    }
+
+    fclose(in);
+    fclose(out);
+    printf("=== Готово. Результат сохранён в output.txt ===\n");
+}
+
+    
