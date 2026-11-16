@@ -2,10 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <ctype.h>
+#include <time.h>
 #include <windows.h>
 #include <locale.h>
 
-/* --- КОНСТАНТЫ --- */
+/* --- КОНСТАНТЫ (лаб. 2-3) --- */
 #define INVENTORY_SIZE 10
 #define HOURS_PER_DAY 24
 #define MAX_ITEMS 10
@@ -25,7 +27,24 @@
 #define ITEM_PICKAXE 8
 #define ITEM_WHEAT 9
 
-/* --- ПРОТОТИПЫ ФУНКЦИЙ --- */
+/* --- КОНСТАНТЫ (лаб. 4, вариант 2: Лес) --- */
+#define MIN_MAP_SIZE 5          /* минимальный размер стороны карты */
+#define MAX_MAP_SIZE 30         /* максимальный размер стороны карты */
+#define CELL_EMPTY '.'
+#define CELL_TREE 'T'
+#define CELL_ROCK 'R'
+#define CELL_HERO '@'
+#define CELL_CAMPFIRE '^'
+#define OBST_MIN_PCT 15         /* минимальная плотность препятствий, % */
+#define OBST_MAX_PCT 30         /* максимальная плотность препятствий, % */
+#define CMD_UP 'w'
+#define CMD_DOWN 's'
+#define CMD_LEFT 'a'
+#define CMD_RIGHT 'd'
+#define CMD_HOME 'q'
+#define MAX_MAP_DIM (MAX_MAP_SIZE * MAX_MAP_SIZE) /* радиус поиска свободной клетки */
+
+/* --- ПРОТОТИПЫ ФУНКЦИЙ (лаб. 2-3) --- */
 const char *get_default_item_name(int id);
 int load_item_names(char item_names[MAX_ITEMS][MAX_NAME_LEN]);
 int read_int_safe(const char *prompt);
@@ -37,6 +56,16 @@ void write_diary(const char *farmer_name, int day, int hour, const int *inventor
 void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN]);
 int replace_tag_in_line(char *line, const char *tag, const char *replacement);
 
+/* --- ПРОТОТИПЫ ФУНКЦИЙ (лаб. 4) --- */
+char **allocate_map(int height, int width);
+void free_map(char **map, int height);
+void fill_forest(char **map, int height, int width);
+int find_free_cell(const char **map, int height, int width, int *x, int *y);
+int find_free_near(char **map, int height, int width, int x, int y, int *fx, int *fy);
+int is_walkable(char cell);
+void render_forest(const char **map, int height, int width, int hero_x, int hero_y);
+char read_move_command(void);
+void run_adventure(void);
 
 int main(void)
 {
@@ -67,6 +96,8 @@ int main(void)
     int found_in_inventory = 0;
     int found_id = -1;
 
+    srand((unsigned)time(NULL)); /* одно зерно на всю игру */
+
     load_item_names(item_names);
     get_farmer_name(farmer_name);
 
@@ -85,9 +116,9 @@ int main(void)
         printf("7 - Поиск предмета по названию\n");
         printf("8 - Записать состояние в дневник (diary.txt)\n");
         printf("9 - Обработать письмо от старосты (шаблонизатор NPC)\n");
+        printf("10 - Отправиться в приключение (Лаб. 4, вариант 2: Лес)\n");
 
-
-        printf("Введи № действия (0-9): ");
+        printf("Введи № действия (0-10): ");
 
         if (scanf("%d", &taskNum) != 1)
         {
@@ -171,10 +202,12 @@ int main(void)
             if (fgets(search_name, sizeof(search_name), stdin) == NULL)
                 break;
 
-            size_t len = strlen(search_name);
-            if (len > 0 && search_name[len - 1] == '\n')
             {
-                search_name[len - 1] = '\0';
+                size_t len = strlen(search_name);
+                if (len > 0 && search_name[len - 1] == '\n')
+                {
+                    search_name[len - 1] = '\0';
+                }
             }
 
             found_id = find_item_by_name(item_names, search_name);
@@ -207,17 +240,21 @@ int main(void)
             write_diary(farmer_name, current_day, current_hour, inventory, item_names);
             printf("Дневник успешно сохранен в diary.txt\n");
             break;
-            case 9:
-    process_npc_dialogue(farmer_name, current_day, inventory, item_names);
-    break;
 
+        case 9:
+            process_npc_dialogue(farmer_name, current_day, inventory, item_names);
+            break;
+
+        case 10:
+            run_adventure();
+            break;
 
         case 0:
             printf("До встречи, %s!\n", farmer_name);
             break;
 
         default:
-            printf("Неверная команда. Выберите 0-8.\n");
+            printf("Неверная команда. Выберите 0-10.\n");
             break;
         }
     } while (taskNum != 0);
@@ -225,7 +262,377 @@ int main(void)
     return 0;
 }
 
-/* --- РЕАЛИЗАЦИЯ ФУНКЦИЙ (ВСЕ переменные i объявлены в начале!) --- */
+/* --- РЕАЛИЗАЦИЯ ФУНКЦИЙ ЛАБ. 4 (все переменные объявлены в начале функции) --- */
+
+/* Выделение памяти под карту: массив указателей на строки.
+   Строки выделяются через calloc, чтобы нулями гарантированно
+   не осталось мусора. При нехватке памяти всё уже занятое — чистится. */
+char **allocate_map(int height, int width)
+{
+    char **map = NULL;
+    int i = 0;
+
+    map = (char **)malloc((size_t)height * sizeof(char *));
+    if (map == NULL)
+    {
+        printf("Ошибка: не удалось выделить память под карту!\n");
+        return NULL;
+    }
+
+    for (i = 0; i < height; i++)
+    {
+        map[i] = (char *)calloc((size_t)width, sizeof(char));
+        if (map[i] == NULL)
+        {
+            /* откатываем всё, что успели выделить */
+            while (--i >= 0)
+            {
+                free(map[i]);
+            }
+            free(map);
+            printf("Ошибка: не удалось выделить память под строку карты!\n");
+            return NULL;
+        }
+    }
+    return map;
+}
+
+/* Освобождение памяти в обратном порядке: сначала строки, потом массив указателей */
+void free_map(char **map, int height)
+{
+    int i = 0;
+
+    if (map == NULL)
+        return;
+
+    for (i = 0; i < height; i++)
+    {
+        free(map[i]);
+    }
+    free(map);
+}
+
+/* Заполнение участка леса: всё поле — свободные клетки,
+   затем случайные препятствия с плотностью 15-30% */
+void fill_forest(char **map, int height, int width)
+{
+    int obstacle_pct = 0;
+    int x = 0;
+    int y = 0;
+
+    obstacle_pct = OBST_MIN_PCT + rand() % (OBST_MAX_PCT - OBST_MIN_PCT + 1);
+
+    for (y = 0; y < height; y++)
+    {
+        for (x = 0; x < width; x++)
+        {
+            map[y][x] = CELL_EMPTY; /* у леса нет сплошных границ из стен */
+        }
+    }
+
+    for (y = 0; y < height; y++)
+    {
+        for (x = 0; x < width; x++)
+        {
+            if (rand() % 100 < obstacle_pct)
+            {
+                if (rand() % 2 == 0)
+                    map[y][x] = CELL_TREE;
+                else
+                    map[y][x] = CELL_ROCK;
+            }
+        }
+    }
+}
+
+/* Поиск случайной свободной клетки ('.') */
+int find_free_cell(const char **map, int height, int width, int *x, int *y)
+{
+    int attempts = 0;
+
+    for (attempts = 0; attempts < MAX_MAP_DIM; attempts++)
+    {
+        int cx = rand() % width;
+        int cy = rand() % height;
+        if (map[cy][cx] == CELL_EMPTY)
+        {
+            *x = cx;
+            *y = cy;
+            return 1;
+        }
+    }
+
+    /* резервный проход по порядку */
+    {
+        int cy = 0;
+        int cx = 0;
+        for (cy = 0; cy < height; cy++)
+        {
+            for (cx = 0; cx < width; cx++)
+            {
+                if (map[cy][cx] == CELL_EMPTY)
+                {
+                    *x = cx;
+                    *y = cy;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* Поиск ближайшей свободной клетки к заданной точке (спираль).
+   Нужен, чтобы герой после перехода не оказался "внутри" препятствия. */
+int find_free_near(char **map, int height, int width, int x, int y, int *fx, int *fy)
+{
+    int radius = 0;
+    int dx = 0;
+    int dy = 0;
+
+    if (x < 0) x = 0;
+    if (x >= width) x = width - 1;
+    if (y < 0) y = 0;
+    if (y >= height) y = height - 1;
+
+    for (radius = 0; radius <= MAX_MAP_DIM; radius++)
+    {
+        for (dy = -radius; dy <= radius; dy++)
+        {
+            for (dx = -radius; dx <= radius; dx++)
+            {
+                int nx = x + dx;
+                int ny = y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                    continue;
+                if (map[ny][nx] == CELL_EMPTY)
+                {
+                    *fx = nx;
+                    *fy = ny;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int is_walkable(char cell)
+{
+    return (cell == CELL_EMPTY || cell == CELL_CAMPFIRE);
+}
+
+/* Отрисовка карты с героем поверх terrain */
+void render_forest(const char **map, int height, int width, int hero_x, int hero_y)
+{
+    int y = 0;
+    int x = 0;
+
+    for (y = 0; y < height; y++)
+    {
+        for (x = 0; x < width; x++)
+        {
+            if (x == hero_x && y == hero_y)
+                putchar(CELL_HERO);
+            else
+                putchar(map[y][x]);
+        }
+        putchar('\n');
+    }
+}
+
+/* Чтение команды движения с защитой от дурака.
+   Возвращает один из символов w/a/s/d/q в нижнем регистре. */
+char read_move_command(void)
+{
+    char buffer[MAX_LINE_LEN];
+    char cmd = 0;
+    int i = 0;
+
+    while (1)
+    {
+        printf("Куда идём? (W-вверх, A-влево, S-вниз, D-вправо, Q-домой): ");
+
+        if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+        {
+            return CMD_HOME; /* поток кончился — считаем отступлением домой */
+        }
+
+        for (i = 0; buffer[i] != '\0'; i++)
+        {
+            cmd = (char)tolower((unsigned char)buffer[i]);
+            if (cmd == CMD_UP || cmd == CMD_DOWN ||
+                cmd == CMD_LEFT || cmd == CMD_RIGHT || cmd == CMD_HOME)
+            {
+                return cmd;
+            }
+            if (cmd != ' ' && cmd != '\t' && cmd != '\n' && cmd != '\r')
+            {
+                break; /* первый осмысленный, но неверный символ */
+            }
+        }
+
+        printf("Такого направления нет! Доступны W, A, S, D, Q.\n");
+    }
+}
+
+/* Главное приключение: генерация леса, движение, переходы между участками */
+void run_adventure(void)
+{
+    char **map = NULL;
+    int height = 0;
+    int width = 0;
+    int hero_x = 0;
+    int hero_y = 0;
+    int fire_x = 0;
+    int fire_y = 0;
+    int maps_traveled = 0;
+    int new_x = 0;
+    int new_y = 0;
+    char cmd = 0;
+    int running = 1;
+
+    /* --- генерация первого участка --- */
+    height = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+    width = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+
+    map = allocate_map(height, width);
+    if (map == NULL)
+    {
+        return;
+    }
+
+    fill_forest(map, height, width);
+
+    if (!find_free_cell((const char **)map, height, width, &fire_x, &fire_y))
+    {
+        printf("Не удалось разместить костёр — карта слишком мала.\n");
+        free_map(map, height);
+        return;
+    }
+    map[fire_y][fire_x] = CELL_CAMPFIRE;
+
+    if (!find_free_cell((const char **)map, height, width, &hero_x, &hero_y))
+    {
+        printf("Не удалось разместить героя — карта слишком мала.\n");
+        free_map(map, height);
+        return;
+    }
+
+    printf("\nВы выходите в лес! Ушёл с корта... то есть с фермы :)\n");
+    printf("Ищите костёр (^), чтобы вернуться домой. Легенды: T-дерево, R-камень, @-вы.\n");
+
+    while (running)
+    {
+        printf("\n--- Участок леса (%dx%d), дальность от дома: %d ---\n",
+               width, height, maps_traveled);
+        render_forest((const char **)map, height, width, hero_x, hero_y);
+
+        cmd = read_move_command();
+
+        if (cmd == CMD_HOME)
+        {
+            if (map[hero_y][hero_x] == CELL_CAMPFIRE)
+            {
+                printf("Вы стоите у костра и возвращаетесь домой!\n");
+                running = 0;
+            }
+            else
+            {
+                printf("Домой уйти можно, только стоя на костре (^)! Ищите его.\n");
+            }
+            continue;
+        }
+
+        /* вычисляем новые координаты */
+        new_x = hero_x;
+        new_y = hero_y;
+        if (cmd == CMD_UP)
+            new_y = hero_y - 1;
+        else if (cmd == CMD_DOWN)
+            new_y = hero_y + 1;
+        else if (cmd == CMD_LEFT)
+            new_x = hero_x - 1;
+        else if (cmd == CMD_RIGHT)
+            new_x = hero_x + 1;
+
+        /* выход за край массива = переход на новый участок леса */
+        if (new_x < 0 || new_x >= width || new_y < 0 || new_y >= height)
+        {
+            maps_traveled++;
+            printf("Вы покидаете участок леса... Новый участок сгенерирован! Дальность от дома: %d\n",
+                   maps_traveled);
+
+            free_map(map, height);
+
+            height = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+            width = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+
+            map = allocate_map(height, width);
+            if (map == NULL)
+            {
+                return;
+            }
+
+            fill_forest(map, height, width);
+
+            if (!find_free_cell((const char **)map, height, width, &fire_x, &fire_y))
+            {
+                printf("Не удалось разместить костёр — карта слишком мала.\n");
+                free_map(map, height);
+                return;
+            }
+            map[fire_y][fire_x] = CELL_CAMPFIRE;
+
+            /* герой появляется у края, с которого пришёл, если тот не занят */
+            if (new_y < 0)
+                hero_y = height - 1;
+            else if (new_y >= height)
+                hero_y = 0;
+            else
+                hero_y = new_y;
+
+            if (new_x < 0)
+                hero_x = width - 1;
+            else if (new_x >= width)
+                hero_x = 0;
+            else
+                hero_x = new_x;
+
+            if (hero_x >= width)  hero_x = width - 1;
+            if (hero_y >= height) hero_y = height - 1;
+
+            if (!find_free_near(map, height, width, hero_x, hero_y, &hero_x, &hero_y))
+            {
+                if (!find_free_cell((const char **)map, height, width, &hero_x, &hero_y))
+                {
+                    printf("Карта забита препятствиями! Приключение прервано.\n");
+                    free_map(map, height);
+                    return;
+                }
+            }
+        }
+        else if (map[new_y][new_x] == CELL_TREE || map[new_y][new_x] == CELL_ROCK)
+        {
+            printf("Дальше не пройти — на пути %c!\n", map[new_y][new_x]);
+        }
+        else
+        {
+            /* шаг на свободную клетку или на костёр */
+            if (map[new_y][new_x] == CELL_CAMPFIRE)
+            {
+                printf("Вы подошли к костру! Теперь Q уведёт вас домой.\n");
+            }
+            hero_x = new_x;
+            hero_y = new_y;
+        }
+    }
+
+    free_map(map, height);
+    printf("Память карты освобождена (free). Возвращаемся на ферму.\n");
+}
+
+/* --- РЕАЛИЗАЦИЯ ФУНКЦИЙ ЛАБ. 2-3 (без изменений по смыслу) --- */
 
 const char *get_default_item_name(int id)
 {
@@ -257,7 +664,7 @@ const char *get_default_item_name(int id)
 int load_item_names(char item_names[MAX_ITEMS][MAX_NAME_LEN])
 {
     FILE *file = fopen("items.txt", "r");
-    int i = 0; /* Объявление i в начале функции */
+    int i = 0;
     int count = 0;
     char line[MAX_LINE_LEN];
 
@@ -303,18 +710,20 @@ int read_int_safe(const char *prompt)
         if (fgets(buffer, sizeof(buffer), stdin) == NULL)
             return 0;
 
-        char *endptr;
-        val_long = strtol(buffer, &endptr, 10);
+        {
+            char *endptr;
+            val_long = strtol(buffer, &endptr, 10);
 
-        if (endptr == buffer || (*endptr != '\n' && *endptr != '\0'))
-        {
-            printf("Некорректный ввод. Введите целое число.\n");
-            continue;
-        }
-        if (val_long < INT_MIN || val_long > INT_MAX)
-        {
-            printf("Число слишком большое.\n");
-            continue;
+            if (endptr == buffer || (*endptr != '\n' && *endptr != '\0'))
+            {
+                printf("Некорректный ввод. Введите целое число.\n");
+                continue;
+            }
+            if (val_long < INT_MIN || val_long > INT_MAX)
+            {
+                printf("Число слишком большое.\n");
+                continue;
+            }
         }
         break;
     }
@@ -323,8 +732,8 @@ int read_int_safe(const char *prompt)
 
 void print_inventory(const int *inventory, const char (*item_names)[MAX_NAME_LEN])
 {
-    int i = 0;  /* Объявление i в начале функции */
-    int id = 0; /* Объявление id в начале функции */
+    int i = 0;
+    int id = 0;
 
     for (i = 0; i < INVENTORY_SIZE; ++i)
     {
@@ -370,7 +779,7 @@ void get_farmer_name(char *name)
 
 int find_item_by_name(const char (*item_names)[MAX_NAME_LEN], const char *target_name)
 {
-    int i = 0; /* Объявление i в начале функции */
+    int i = 0;
 
     for (i = 0; i < MAX_ITEMS; ++i)
     {
@@ -385,8 +794,8 @@ int find_item_by_name(const char (*item_names)[MAX_NAME_LEN], const char *target
 void write_diary(const char *farmer_name, int day, int hour, const int *inventory, const char (*item_names)[MAX_NAME_LEN])
 {
     FILE *file = fopen("diary.txt", "a");
-    int i = 0;  /* Объявление i в начале функции */
-    int id = 0; /* Объявление id в начале функции */
+    int i = 0;
+    int id = 0;
 
     if (file == NULL)
     {
@@ -424,23 +833,19 @@ int replace_tag_in_line(char *line, const char *tag, const char *replacement)
     while ((pos = strstr(pos, tag)) != NULL)
     {
         size_t remaining = strlen(pos);
-        // Сдвигаем хвост строки, чтобы освободить место под замену
         size_t replace_len = strlen(replacement);
+
         if (replace_len > tag_len)
         {
-            // Если замена длиннее тега, нужно сдвинуть хвост вправо
             memmove(pos + replace_len, pos + tag_len, remaining - tag_len + 1);
         }
         else if (replace_len < tag_len)
         {
-            // Если короче — сдвигаем влево, чтобы убрать лишнее
             memmove(pos + replace_len, pos + tag_len, remaining - tag_len + 1);
         }
 
-        // Вставляем замену
         memcpy(pos, replacement, replace_len);
-
-        pos += replace_len;      // двигаемся дальше после вставки
+        pos += replace_len;
         count++;
     }
 
@@ -451,6 +856,16 @@ void process_npc_dialogue(const char *farmer_name, int day, const int *inventory
 {
     FILE *in = fopen("input.txt", "r");
     FILE *out = fopen("output.txt", "w");
+
+    char line[MAX_LINE_LEN];
+    const char *item0_name = item_names[ITEM_EMPTY];
+    char day_str[16];
+
+    int id0 = inventory[0];
+    if (id0 >= 0 && id0 < MAX_ITEMS)
+    {
+        item0_name = item_names[id0];
+    }
 
     if (!in)
     {
@@ -464,46 +879,31 @@ void process_npc_dialogue(const char *farmer_name, int day, const int *inventory
         return;
     }
 
-    char line[MAX_LINE_LEN];
-    const char *item0_name = item_names[ITEM_EMPTY]; // по умолчанию "Пусто"
-
-    // Получаем название предмета в нулевом слоте (если ID корректен)
-    int id0 = inventory[0];
-    if (id0 >= 0 && id0 < MAX_ITEMS)
-    {
-        item0_name = item_names[id0];
-    }
-
     printf("\n=== Обработка письма от старосты (Вариант 4) ===\n");
 
-    int line_num = 0;
-    while (fgets(line, sizeof(line), in) != NULL)
+    sprintf(day_str, "%d", day);
+
     {
-        line_num++;
-
-        // Убираем \n для удобства, но сохраняем возможность вывода
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n')
+        int line_num = 0;
+        while (fgets(line, sizeof(line), in) != NULL)
         {
-            line[len - 1] = '\0';
-            len--;
+            line_num++;
+
+            {
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n')
+                {
+                    line[len - 1] = '\0';
+                }
+            }
+
+            replace_tag_in_line(line, "<NAME>", farmer_name);
+            replace_tag_in_line(line, "<DAY>", day_str);
+            replace_tag_in_line(line, "<ITEM>", item0_name);
+
+            printf("%s\n", line);
+            fprintf(out, "%s\n", line);
         }
-
-        // Заменяем теги
-        replace_tag_in_line(line, "<NAME>", farmer_name);
-        replace_tag_in_line(line, "<DAY>", line); // сначала <DAY> нельзя, он числовой
-        // Чтобы заменить <DAY>, нужно подготовить строку-число
-        char day_str[16];
-        sprintf(day_str, "%d", day);
-        replace_tag_in_line(line, "<DAY>", day_str);
-
-        replace_tag_in_line(line, "<ITEM>", item0_name);
-
-        // Выводим на экран
-        printf("%s\n", line);
-
-        // Пишем в файл (с новой строкой)
-        fprintf(out, "%s\n", line);
     }
 
     fclose(in);
