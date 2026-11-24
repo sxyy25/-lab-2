@@ -27,22 +27,27 @@
 #define ITEM_PICKAXE 8
 #define ITEM_WHEAT 9
 
-/* --- КОНСТАНТЫ (лаб. 4, вариант 2: Лес) --- */
-#define MIN_MAP_SIZE 5          /* минимальный размер стороны карты */
-#define MAX_MAP_SIZE 30         /* максимальный размер стороны карты */
+/* --- КОНСТАНТЫ (лаб. 4: Подземелье + туман войны) --- */
+#define MIN_MAP_SIZE 5          /* минимальный размер стороны этажа */
+#define MAX_MAP_SIZE 30         /* максимальный размер стороны этажа */
 #define CELL_EMPTY '.'
+#define CELL_WALL '#'
 #define CELL_TREE 'T'
 #define CELL_ROCK 'R'
 #define CELL_HERO '@'
-#define CELL_CAMPFIRE '^'
+#define CELL_STAIR_DOWN 'D'     /* лестница вниз — на новый этаж */
+#define CELL_STAIR_UP 'U'       /* лестница вверх — выход домой */
+#define CELL_UNKNOWN '?'        /* клетка, скрытая туманом войны */
 #define OBST_MIN_PCT 15         /* минимальная плотность препятствий, % */
 #define OBST_MAX_PCT 30         /* максимальная плотность препятствий, % */
+#define VIS_MIN_RADIUS 3        /* минимальный радиус тумана войны */
+#define VIS_MAX_RADIUS 5        /* максимальный радиус тумана войны */
 #define CMD_UP 'w'
 #define CMD_DOWN 's'
 #define CMD_LEFT 'a'
 #define CMD_RIGHT 'd'
 #define CMD_HOME 'q'
-#define MAX_MAP_DIM (MAX_MAP_SIZE * MAX_MAP_SIZE) /* радиус поиска свободной клетки */
+#define MAX_MAP_DIM (MAX_MAP_SIZE * MAX_MAP_SIZE) /* предел поисков клетки */
 
 /* --- ПРОТОТИПЫ ФУНКЦИЙ (лаб. 2-3) --- */
 const char *get_default_item_name(int id);
@@ -56,16 +61,19 @@ void write_diary(const char *farmer_name, int day, int hour, const int *inventor
 void process_npc_dialogue(const char *farmer_name, int day, const int *inventory, const char (*item_names)[MAX_NAME_LEN]);
 int replace_tag_in_line(char *line, const char *tag, const char *replacement);
 
-/* --- ПРОТОТИПЫ ФУНКЦИЙ (лаб. 4) --- */
-char **allocate_map(int height, int width);
+/* --- ПРОТОТИПЫ ФУНКЦИЙ (лаб. 4: подземелье) --- */
+char **create_map(int height, int width);
 void free_map(char **map, int height);
-void fill_forest(char **map, int height, int width);
+void fill_dungeon(char **map, int height, int width);
 int find_free_cell(const char **map, int height, int width, int *x, int *y);
-int find_free_near(char **map, int height, int width, int x, int y, int *fx, int *fy);
+int place_stair_up(char **map, int height, int width, int near_x, int near_y, int *ux, int *uy);
 int is_walkable(char cell);
-void render_forest(const char **map, int height, int width, int hero_x, int hero_y);
+void render_dungeon(const char **map, int height, int width,
+                    int hero_x, int hero_y, int vis_radius);
 char read_move_command(void);
-void run_adventure(void);
+int generate_floor(char **map, int *height, int *width,
+                   int *hero_x, int *hero_y, int *down_x, int *down_y, int *up_x, int *up_y);
+void run_dungeon(void);
 
 int main(void)
 {
@@ -116,7 +124,7 @@ int main(void)
         printf("7 - Поиск предмета по названию\n");
         printf("8 - Записать состояние в дневник (diary.txt)\n");
         printf("9 - Обработать письмо от старосты (шаблонизатор NPC)\n");
-        printf("10 - Отправиться в приключение (Лаб. 4, вариант 2: Лес)\n");
+        printf("10 - Спуститься в подземелье (Лаб. 4: Подземелье + туман войны)\n");
 
         printf("Введи № действия (0-10): ");
 
@@ -246,7 +254,7 @@ int main(void)
             break;
 
         case 10:
-            run_adventure();
+            run_dungeon();
             break;
 
         case 0:
@@ -264,10 +272,10 @@ int main(void)
 
 /* --- РЕАЛИЗАЦИЯ ФУНКЦИЙ ЛАБ. 4 (все переменные объявлены в начале функции) --- */
 
-/* Выделение памяти под карту: массив указателей на строки.
-   Строки выделяются через calloc, чтобы нулями гарантированно
-   не осталось мусора. При нехватке памяти всё уже занятое — чистится. */
-char **allocate_map(int height, int width)
+/* Создаёт двумерный динамический массив карты.
+   malloc — под массив указателей на строки, calloc — под каждую строку.
+   При провале в середине освобождает всё, что успели выделить. */
+char **create_map(int height, int width)
 {
     char **map = NULL;
     int i = 0;
@@ -312,9 +320,9 @@ void free_map(char **map, int height)
     free(map);
 }
 
-/* Заполнение участка леса: всё поле — свободные клетки,
-   затем случайные препятствия с плотностью 15-30% */
-void fill_forest(char **map, int height, int width)
+/* Заполнение этажа подземелья: границы — стены #,
+   внутри — пол с препятствиями плотностью 15-30% */
+void fill_dungeon(char **map, int height, int width)
 {
     int obstacle_pct = 0;
     int x = 0;
@@ -326,13 +334,17 @@ void fill_forest(char **map, int height, int width)
     {
         for (x = 0; x < width; x++)
         {
-            map[y][x] = CELL_EMPTY; /* у леса нет сплошных границ из стен */
+            if (y == 0 || y == height - 1 || x == 0 || x == width - 1)
+                map[y][x] = CELL_WALL; /* замкнутая граница */
+            else
+                map[y][x] = CELL_EMPTY;
         }
     }
 
-    for (y = 0; y < height; y++)
+    /* препятствия — только во внутреннем пространстве */
+    for (y = 1; y < height - 1; y++)
     {
-        for (x = 0; x < width; x++)
+        for (x = 1; x < width - 1; x++)
         {
             if (rand() % 100 < obstacle_pct)
             {
@@ -349,11 +361,13 @@ void fill_forest(char **map, int height, int width)
 int find_free_cell(const char **map, int height, int width, int *x, int *y)
 {
     int attempts = 0;
+    int cx = 0;
+    int cy = 0;
 
     for (attempts = 0; attempts < MAX_MAP_DIM; attempts++)
     {
-        int cx = rand() % width;
-        int cy = rand() % height;
+        cx = rand() % width;
+        cy = rand() % height;
         if (map[cy][cx] == CELL_EMPTY)
         {
             *x = cx;
@@ -363,52 +377,71 @@ int find_free_cell(const char **map, int height, int width, int *x, int *y)
     }
 
     /* резервный проход по порядку */
+    for (cy = 0; cy < height; cy++)
     {
-        int cy = 0;
-        int cx = 0;
-        for (cy = 0; cy < height; cy++)
+        for (cx = 0; cx < width; cx++)
         {
-            for (cx = 0; cx < width; cx++)
+            if (map[cy][cx] == CELL_EMPTY)
             {
-                if (map[cy][cx] == CELL_EMPTY)
-                {
-                    *x = cx;
-                    *y = cy;
-                    return 1;
-                }
+                *x = cx;
+                *y = cy;
+                return 1;
             }
         }
     }
     return 0;
 }
 
-/* Поиск ближайшей свободной клетки к заданной точке (спираль).
-   Нужен, чтобы герой после перехода не оказался "внутри" препятствия. */
-int find_free_near(char **map, int height, int width, int x, int y, int *fx, int *fy)
+/* Ставит лестницу вверх U рядом с точкой старта.
+   Сначала проверяет 8 соседних клеток, при неудаче ищет ближайшую свободную
+   спиралью (кроме самой точки старта). Возвращает успех/провал. */
+int place_stair_up(char **map, int height, int width, int near_x, int near_y, int *ux, int *uy)
 {
-    int radius = 0;
     int dx = 0;
     int dy = 0;
+    int nx = 0;
+    int ny = 0;
+    int radius = 0;
 
-    if (x < 0) x = 0;
-    if (x >= width) x = width - 1;
-    if (y < 0) y = 0;
-    if (y >= height) y = height - 1;
+    /* 1. непосредственные соседи точки старта */
+    for (dy = -1; dy <= 1; dy++)
+    {
+        for (dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0)
+                continue; /* сама клетка старта не подходит */
+            nx = near_x + dx;
+            ny = near_y + dy;
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                continue;
+            if (map[ny][nx] == CELL_EMPTY)
+            {
+                map[ny][nx] = CELL_STAIR_UP;
+                *ux = nx;
+                *uy = ny;
+                return 1;
+            }
+        }
+    }
 
-    for (radius = 0; radius <= MAX_MAP_DIM; radius++)
+    /* 2. спиральный поиск ближайшей свободной клетки */
+    for (radius = 2; radius <= MAX_MAP_DIM; radius++)
     {
         for (dy = -radius; dy <= radius; dy++)
         {
             for (dx = -radius; dx <= radius; dx++)
             {
-                int nx = x + dx;
-                int ny = y + dy;
+                nx = near_x + dx;
+                ny = near_y + dy;
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                    continue;
+                if (nx == near_x && ny == near_y)
                     continue;
                 if (map[ny][nx] == CELL_EMPTY)
                 {
-                    *fx = nx;
-                    *fy = ny;
+                    map[ny][nx] = CELL_STAIR_UP;
+                    *ux = nx;
+                    *uy = ny;
                     return 1;
                 }
             }
@@ -419,23 +452,45 @@ int find_free_near(char **map, int height, int width, int x, int y, int *fx, int
 
 int is_walkable(char cell)
 {
-    return (cell == CELL_EMPTY || cell == CELL_CAMPFIRE);
+    return (cell == CELL_EMPTY ||
+            cell == CELL_STAIR_DOWN ||
+            cell == CELL_STAIR_UP);
 }
 
-/* Отрисовка карты с героем поверх terrain */
-void render_forest(const char **map, int height, int width, int hero_x, int hero_y)
+/* Отрисовка этажа с туманом войны:
+   видны только клетки в квадрате радиуса vis_radius вокруг героя,
+   остальные скрыты символом '?' */
+void render_dungeon(const char **map, int height, int width,
+                    int hero_x, int hero_y, int vis_radius)
 {
     int y = 0;
     int x = 0;
+    int dist_x = 0;
+    int dist_y = 0;
 
     for (y = 0; y < height; y++)
     {
         for (x = 0; x < width; x++)
         {
-            if (x == hero_x && y == hero_y)
+            dist_x = x - hero_x;
+            if (dist_x < 0)
+                dist_x = -dist_x;
+            dist_y = y - hero_y;
+            if (dist_y < 0)
+                dist_y = -dist_y;
+
+            if (dist_x > vis_radius || dist_y > vis_radius)
+            {
+                putchar(CELL_UNKNOWN); /* туман войны */
+            }
+            else if (x == hero_x && y == hero_y)
+            {
                 putchar(CELL_HERO);
+            }
             else
+            {
                 putchar(map[y][x]);
+            }
         }
         putchar('\n');
     }
@@ -476,70 +531,96 @@ char read_move_command(void)
     }
 }
 
-/* Главное приключение: генерация леса, движение, переходы между участками */
-void run_adventure(void)
+/* Генерация нового этажа: заполняет карту, размещает героя,
+   лестницу U рядом со стартом и лестницу D в случайном месте.
+   Возвращает 1 при успехе, 0 при неудаче. */
+int generate_floor(char **map, int *height, int *width,
+                   int *hero_x, int *hero_y, int *down_x, int *down_y, int *up_x, int *up_y)
+{
+    if (!find_free_cell((const char **)map, *height, *width, hero_x, hero_y))
+    {
+        return 0;
+    }
+
+    if (!place_stair_up(map, *height, *width, *hero_x, *hero_y, up_x, up_y))
+    {
+        return 0;
+    }
+
+    if (!find_free_cell((const char **)map, *height, *width, down_x, down_y))
+    {
+        return 0;
+    }
+    map[*down_y][*down_x] = CELL_STAIR_DOWN;
+
+    return 1;
+}
+
+/* Приключение: подземелье с туманом войны, лестницами и счётчиком глубины */
+void run_dungeon(void)
 {
     char **map = NULL;
     int height = 0;
     int width = 0;
     int hero_x = 0;
     int hero_y = 0;
-    int fire_x = 0;
-    int fire_y = 0;
-    int maps_traveled = 0;
+    int down_x = 0;
+    int down_y = 0;
+    int up_x = 0;
+    int up_y = 0;
+    int depth = 1;      /* глубина: этаж 1 — старт */
+    int vis_radius = 0; /* радиус тумана войны для этой вылазки */
     int new_x = 0;
     int new_y = 0;
     char cmd = 0;
     int running = 1;
 
-    /* --- генерация первого участка --- */
+    /* радиус видимости 3-5, выбирается один раз на всю вылазку */
+    vis_radius = VIS_MIN_RADIUS + rand() % (VIS_MAX_RADIUS - VIS_MIN_RADIUS + 1);
+
+    /* --- генерация первого этажа --- */
     height = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
     width = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
 
-    map = allocate_map(height, width);
+    map = create_map(height, width);
     if (map == NULL)
     {
         return;
     }
 
-    fill_forest(map, height, width);
+    fill_dungeon(map, height, width);
 
-    if (!find_free_cell((const char **)map, height, width, &fire_x, &fire_y))
+    if (!generate_floor(map, &height, &width,
+                        &hero_x, &hero_y, &down_x, &down_y, &up_x, &up_y))
     {
-        printf("Не удалось разместить костёр — карта слишком мала.\n");
-        free_map(map, height);
-        return;
-    }
-    map[fire_y][fire_x] = CELL_CAMPFIRE;
-
-    if (!find_free_cell((const char **)map, height, width, &hero_x, &hero_y))
-    {
-        printf("Не удалось разместить героя — карта слишком мала.\n");
+        printf("Не удалось разместить героя и лестницы — этаж слишком тесен.\n");
         free_map(map, height);
         return;
     }
 
-    printf("\nВы выходите в лес! Ушёл с корта... то есть с фермы :)\n");
-    printf("Ищите костёр (^), чтобы вернуться домой. Легенды: T-дерево, R-камень, @-вы.\n");
+    printf("\nВы спускаетесь в подземелье! Глубина: %d. Радиус видимости: %d\n",
+           depth, vis_radius);
+    printf("Легенды: # — стена, T — корень, R — камень, D — вниз, U — наверх, @ — вы, ? — туман.\n");
+    printf("Встаньте на U и нажмите Q, чтобы вернуться домой. D ведёт глубже.\n");
 
     while (running)
     {
-        printf("\n--- Участок леса (%dx%d), дальность от дома: %d ---\n",
-               width, height, maps_traveled);
-        render_forest((const char **)map, height, width, hero_x, hero_y);
+        printf("\n--- Этаж %d (%dx%d), радиус видимости: %d ---\n",
+               depth, width, height, vis_radius);
+        render_dungeon((const char **)map, height, width, hero_x, hero_y, vis_radius);
 
         cmd = read_move_command();
 
         if (cmd == CMD_HOME)
         {
-            if (map[hero_y][hero_x] == CELL_CAMPFIRE)
+            if (hero_x == up_x && hero_y == up_y)
             {
-                printf("Вы стоите у костра и возвращаетесь домой!\n");
+                printf("Вы поднимаетесь по лестнице U и выбираетесь из подземелья!\n");
                 running = 0;
             }
             else
             {
-                printf("Домой уйти можно, только стоя на костре (^)! Ищите его.\n");
+                printf("Домой можно уйти, только стоя на лестнице вверх (U)! Ищите её рядом со стартом.\n");
             }
             continue;
         }
@@ -556,75 +637,49 @@ void run_adventure(void)
         else if (cmd == CMD_RIGHT)
             new_x = hero_x + 1;
 
-        /* выход за край массива = переход на новый участок леса */
+        /* стены по периметру — за границу не выйти (иначе был бы Segfault) */
         if (new_x < 0 || new_x >= width || new_y < 0 || new_y >= height)
         {
-            maps_traveled++;
-            printf("Вы покидаете участок леса... Новый участок сгенерирован! Дальность от дома: %d\n",
-                   maps_traveled);
-
-            free_map(map, height);
-
-            height = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
-            width = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
-
-            map = allocate_map(height, width);
-            if (map == NULL)
-            {
-                return;
-            }
-
-            fill_forest(map, height, width);
-
-            if (!find_free_cell((const char **)map, height, width, &fire_x, &fire_y))
-            {
-                printf("Не удалось разместить костёр — карта слишком мала.\n");
-                free_map(map, height);
-                return;
-            }
-            map[fire_y][fire_x] = CELL_CAMPFIRE;
-
-            /* герой появляется у края, с которого пришёл, если тот не занят */
-            if (new_y < 0)
-                hero_y = height - 1;
-            else if (new_y >= height)
-                hero_y = 0;
-            else
-                hero_y = new_y;
-
-            if (new_x < 0)
-                hero_x = width - 1;
-            else if (new_x >= width)
-                hero_x = 0;
-            else
-                hero_x = new_x;
-
-            if (hero_x >= width)  hero_x = width - 1;
-            if (hero_y >= height) hero_y = height - 1;
-
-            if (!find_free_near(map, height, width, hero_x, hero_y, &hero_x, &hero_y))
-            {
-                if (!find_free_cell((const char **)map, height, width, &hero_x, &hero_y))
-                {
-                    printf("Карта забита препятствиями! Приключение прервано.\n");
-                    free_map(map, height);
-                    return;
-                }
-            }
+            printf("Впереди стена подземелья! Дальше пути нет.\n");
         }
-        else if (map[new_y][new_x] == CELL_TREE || map[new_y][new_x] == CELL_ROCK)
+        else if (map[new_y][new_x] == CELL_WALL ||
+                 map[new_y][new_x] == CELL_TREE ||
+                 map[new_y][new_x] == CELL_ROCK)
         {
             printf("Дальше не пройти — на пути %c!\n", map[new_y][new_x]);
         }
         else
         {
-            /* шаг на свободную клетку или на костёр */
-            if (map[new_y][new_x] == CELL_CAMPFIRE)
-            {
-                printf("Вы подошли к костру! Теперь Q уведёт вас домой.\n");
-            }
             hero_x = new_x;
             hero_y = new_y;
+
+            /* герой встал на лестницу вниз — новый этаж */
+            if (map[hero_y][hero_x] == CELL_STAIR_DOWN)
+            {
+                depth++;
+                printf("Вы спускаетесь по лестнице D... Глубина: %d\n", depth);
+
+                free_map(map, height); /* старый этаж освобождается */
+
+                height = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+                width = MIN_MAP_SIZE + rand() % (MAX_MAP_SIZE - MIN_MAP_SIZE + 1);
+
+                map = create_map(height, width);
+                if (map == NULL)
+                {
+                    return;
+                }
+
+                fill_dungeon(map, height, width);
+
+                if (!generate_floor(map, &height, &width,
+                                    &hero_x, &hero_y, &down_x, &down_y, &up_x, &up_y))
+                {
+                    printf("Новый этаж оказался непригодным для жизни. Эвакуация!\n");
+                    free_map(map, height);
+                    return;
+                }
+            }
         }
     }
 
